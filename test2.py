@@ -36,6 +36,7 @@ def call_groq(prompt: str, max_tokens: int = 500) -> str:
         return ""
     
     try:
+        logger.info(f"Calling Groq API with max_tokens={max_tokens}")
         response = requests.post(GROQ_API_URL, 
             headers={
                 "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -49,10 +50,13 @@ def call_groq(prompt: str, max_tokens: int = 500) -> str:
             },
             timeout=30
         )
+        logger.info(f"Groq API response status: {response.status_code}")
         if response.status_code == 200:
-            return response.json()['choices'][0]['message']['content']
+            result = response.json()['choices'][0]['message']['content']
+            logger.info(f"Groq API success, response length: {len(result)}")
+            return result
         else:
-            logger.error(f"Groq API error: {response.status_code}")
+            logger.error(f"Groq API error: {response.status_code} - {response.text}")
             return ""
     except Exception as e:
         logger.error(f"Groq API connection error: {e}")
