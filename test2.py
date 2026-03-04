@@ -85,8 +85,14 @@ Start with the service name followed by a colon. Be concise and precise."""
 
         try:
             response = call_groq(prompt, max_tokens=80)
-            return response.strip() if response else f"{service_name}: Provides core cloud functionality."
-        except:
+            if response:
+                logger.info(f"Generated description for {service_name}")
+                return response.strip()
+            else:
+                logger.warning(f"Empty response for {service_name}, using default")
+                return f"{service_name}: Provides core cloud functionality."
+        except Exception as e:
+            logger.error(f"Error generating description for {service_name}: {e}")
             return f"{service_name}: Provides core cloud functionality."
 
     def generate_best_practices(self, services: List[str]) -> List[str]:
@@ -101,12 +107,20 @@ Start directly with the numbered list."""
 
         try:
             response = call_groq(prompt, max_tokens=400)
-            lines = [line.strip() for line in response.split('\n') if line.strip() and re.match(r'^\d+\.', line.strip())]
-            return lines[:5] if lines else ["1. Implement IAM roles with least privilege principles.",
-                                             "2. Enable CloudTrail for auditing.",
-                                             "3. Use Cost Explorer for cost optimization.",
-                                             "4. Configure CloudWatch for monitoring.",
-                                             "5. Implement backup and disaster recovery strategies."]
+            if response:
+                logger.info(f"Generated best practices for {len(services)} services")
+                lines = [line.strip() for line in response.split('\n') if line.strip() and re.match(r'^\d+\.', line.strip())]
+                if lines:
+                    return lines[:5]
+                else:
+                    logger.warning("No numbered lines found in response, using defaults")
+            else:
+                logger.warning("Empty response for best practices, using defaults")
+            return ["1. Implement IAM roles with least privilege principles.",
+                    "2. Enable CloudTrail for auditing.",
+                    "3. Use Cost Explorer for cost optimization.",
+                    "4. Configure CloudWatch for monitoring.",
+                    "5. Implement backup and disaster recovery strategies."]
         except Exception as e:
             logger.error(f"Error generating best practices: {e}")
             return ["1. Implement IAM roles with least privilege principles.",
