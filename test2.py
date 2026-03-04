@@ -8,6 +8,10 @@ from datetime import datetime
 import os
 import logging
 from typing import Dict, List
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -15,7 +19,7 @@ logger = logging.getLogger(__name__)
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.1-8b-instant"
 
-# Get API key from config file or environment variable
+# Get API key from .env file, config.py, or environment variable
 try:
     from config import GROQ_API_KEY
 except ImportError:

@@ -63,9 +63,10 @@ with st.sidebar:
     1. Go to https://console.groq.com
     2. Sign up (free)
     3. Get your API key
-    4. Create `config.py` file:
-       ```python
-       GROQ_API_KEY = "your_key_here"
+    4. Copy `.env.example` to `.env`
+    5. Add your key to `.env` file:
+       ```
+       GROQ_API_KEY=your_key_here
        ```
     """)
 
@@ -167,7 +168,7 @@ if generate_btn:
                     
             except Exception as e:
                 st.error(f"❌ An error occurred: {str(e)}")
-                st.info("💡 Make sure to create config.py with your GROQ_API_KEY")
+                st.info("💡 Make sure to create .env file with your GROQ_API_KEY")
 
 st.markdown("---")
 st.markdown("""

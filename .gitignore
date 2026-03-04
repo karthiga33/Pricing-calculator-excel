@@ -49,6 +49,7 @@ Thumbs.db
 
 # API Keys
 config.py
+.env
 
 # Output files
 *.xlsx
