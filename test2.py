@@ -19,11 +19,15 @@ logger = logging.getLogger(__name__)
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.1-8b-instant"
 
-# Get API key from .env file, config.py, or environment variable
+# Get API key from Streamlit secrets, .env file, config.py, or environment variable
 try:
-    from config import GROQ_API_KEY
-except ImportError:
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+    import streamlit as st
+    GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", "")
+except:
+    try:
+        from config import GROQ_API_KEY
+    except ImportError:
+        GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 def call_groq(prompt: str, max_tokens: int = 500) -> str:
     """Call Groq API (Free)"""
