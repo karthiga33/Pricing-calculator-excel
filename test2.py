@@ -83,27 +83,51 @@ class CostReportAgent:
         if not instance_types:
             return {}
 
-        prompt = f"""You are an AWS EC2 specifications expert with access to official AWS documentation.
+        prompt = f"""You are an AWS EC2 specifications expert. Provide EXACT official AWS specifications.
 
-For each EC2 instance type below, provide the EXACT specifications from AWS official documentation.
+Instance types to lookup: {', '.join(instance_types)}
 
-Instance types: {', '.join(instance_types)}
+CRITICAL RULES - Follow AWS official patterns:
 
-IMPORTANT RULES:
-1. Use ONLY official AWS EC2 specifications
-2. For "large" instances: typically 2 vCPUs
-3. For "xlarge" instances: typically 4 vCPUs  
-4. For "2xlarge" instances: typically 8 vCPUs
-5. Memory follows pattern: m6a.large = 8 GiB, m6a.xlarge = 16 GiB, m6a.2xlarge = 32 GiB
-6. T-series: t3.large = 2 vCPUs/8 GiB, t3.xlarge = 4 vCPUs/16 GiB
-7. M-series: m5.large = 2 vCPUs/8 GiB, m6a.large = 2 vCPUs/8 GiB
-8. C-series: c5.large = 2 vCPUs/4 GiB (compute optimized, less memory)
-9. R-series: r5.large = 2 vCPUs/16 GiB (memory optimized, more memory)
+1. SIZE PATTERNS (EXACT):
+   - nano: 2 vCPUs, 0.5 GiB
+   - micro: 1-2 vCPUs, 1 GiB
+   - small: 1-2 vCPUs, 2 GiB
+   - medium: 2 vCPUs, 4 GiB
+   - large: 2 vCPUs, 8 GiB
+   - xlarge: 4 vCPUs, 16 GiB
+   - 2xlarge: 8 vCPUs, 32 GiB
+   - 4xlarge: 16 vCPUs, 64 GiB
 
-Return ONLY valid JSON (no markdown, no explanation):
+2. FAMILY PATTERNS:
+   T-series (Burstable): t2, t3, t3a, t4g
+   - t3.medium = 2 vCPUs, 4 GiB
+   - t3a.medium = 2 vCPUs, 4 GiB (AMD variant)
+   - t3.large = 2 vCPUs, 8 GiB
+   
+   M-series (General Purpose): m5, m6a, m6i, m6g
+   - m6a.large = 2 vCPUs, 8 GiB
+   - m6a.xlarge = 4 vCPUs, 16 GiB
+   - m5.2xlarge = 8 vCPUs, 32 GiB
+   
+   C-series (Compute): c5, c6a, c6i
+   - c5.large = 2 vCPUs, 4 GiB (HALF memory of M-series)
+   - c5.xlarge = 4 vCPUs, 8 GiB
+   
+   R-series (Memory): r5, r6a, r6i
+   - r5.large = 2 vCPUs, 16 GiB (DOUBLE memory of M-series)
+   - r5.xlarge = 4 vCPUs, 32 GiB
+
+3. MEMORY FORMULA:
+   - T/M-series: large=8GB, xlarge=16GB, 2xlarge=32GB
+   - C-series: large=4GB, xlarge=8GB, 2xlarge=16GB (half of M)
+   - R-series: large=16GB, xlarge=32GB, 2xlarge=64GB (double of M)
+
+Return ONLY valid JSON (no markdown, no text):
 {{
+  "t3a.medium": {{"vCPUs": 2, "MemoryGiB": 4}},
   "m6a.large": {{"vCPUs": 2, "MemoryGiB": 8}},
-  "t3.xlarge": {{"vCPUs": 4, "MemoryGiB": 16}}
+  "c5.xlarge": {{"vCPUs": 4, "MemoryGiB": 8}}
 }}
 
 JSON:"""
