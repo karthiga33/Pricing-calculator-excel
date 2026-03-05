@@ -83,20 +83,33 @@ class CostReportAgent:
         if not instance_types:
             return {}
 
-        prompt = f"""You are an AWS EC2 expert. For each instance type below, provide EXACT vCPU count and Memory in GiB.
+        prompt = f"""You are an AWS EC2 specifications expert with access to official AWS documentation.
+
+For each EC2 instance type below, provide the EXACT specifications from AWS official documentation.
 
 Instance types: {', '.join(instance_types)}
 
-Return ONLY valid JSON in this exact format (no markdown, no explanation):
+IMPORTANT RULES:
+1. Use ONLY official AWS EC2 specifications
+2. For "large" instances: typically 2 vCPUs
+3. For "xlarge" instances: typically 4 vCPUs  
+4. For "2xlarge" instances: typically 8 vCPUs
+5. Memory follows pattern: m6a.large = 8 GiB, m6a.xlarge = 16 GiB, m6a.2xlarge = 32 GiB
+6. T-series: t3.large = 2 vCPUs/8 GiB, t3.xlarge = 4 vCPUs/16 GiB
+7. M-series: m5.large = 2 vCPUs/8 GiB, m6a.large = 2 vCPUs/8 GiB
+8. C-series: c5.large = 2 vCPUs/4 GiB (compute optimized, less memory)
+9. R-series: r5.large = 2 vCPUs/16 GiB (memory optimized, more memory)
+
+Return ONLY valid JSON (no markdown, no explanation):
 {{
-  "t2.micro": {{"vCPUs": 1, "MemoryGiB": 1}},
+  "m6a.large": {{"vCPUs": 2, "MemoryGiB": 8}},
   "t3.xlarge": {{"vCPUs": 4, "MemoryGiB": 16}}
 }}
 
 JSON:"""
 
         try:
-            response = call_groq(prompt, max_tokens=500)
+            response = call_groq(prompt, max_tokens=600)
             logger.info(f"EC2 specs raw response: {response[:200]}")
             
             # Try to extract JSON from response
