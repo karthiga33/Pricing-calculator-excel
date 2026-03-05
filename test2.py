@@ -83,34 +83,62 @@ class CostReportAgent:
         if not instance_types:
             return {}
 
-        prompt = f"""You are a data extraction assistant specialized in AWS EC2 instances.
-Given these EC2 instance types: {', '.join(instance_types)}
-Provide the vCPUs and Memory (GiB) for each instance type.
-Return ONLY a JSON object where keys are instance types and values are dictionaries with 'vCPUs' and 'MemoryGiB' keys.
-Example: {{"t2.micro": {{"vCPUs": 1, "MemoryGiB": 1}}}}"""
+        prompt = f"""You are an AWS EC2 expert. For each instance type below, provide EXACT vCPU count and Memory in GiB.
+
+Instance types: {', '.join(instance_types)}
+
+Return ONLY valid JSON in this exact format (no markdown, no explanation):
+{{
+  "t2.micro": {{"vCPUs": 1, "MemoryGiB": 1}},
+  "t3.xlarge": {{"vCPUs": 4, "MemoryGiB": 16}}
+}}
+
+JSON:"""
 
         try:
             response = call_groq(prompt, max_tokens=500)
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            logger.info(f"EC2 specs raw response: {response[:200]}")
+            
+            # Try to extract JSON from response
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response, re.DOTALL)
             if json_match:
-                ec2_specs = json.loads(json_match.group())
+                json_str = json_match.group()
+                ec2_specs = json.loads(json_str)
+                logger.info(f"Successfully parsed EC2 specs: {ec2_specs}")
+                
+                # Ensure all instance types are in the result
                 for it in instance_types:
-                    ec2_specs.setdefault(it, {"vCPUs": None, "MemoryGiB": None})
+                    if it not in ec2_specs:
+                        ec2_specs[it] = {"vCPUs": None, "MemoryGiB": None}
                 return ec2_specs
+            else:
+                logger.warning("No JSON found in EC2 specs response")
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decode error for EC2 specs: {e}")
         except Exception as e:
             logger.error(f"Error extracting EC2 specs: {e}")
         
         return {it: {"vCPUs": None, "MemoryGiB": None} for it in instance_types}
 
     def generate_service_description(self, service_name: str) -> str:
-        prompt = f"""You are an AWS expert. Provide a one-sentence description of the AWS service: {service_name}
-Start with the service name followed by a colon. Be concise and precise."""
+        prompt = f"""You are an AWS cloud expert. Describe this AWS service in ONE clear sentence.
+
+Service: {service_name}
+
+Format: {service_name}: [your description]
+
+Be specific about what the service does and its primary use case."""
 
         try:
-            response = call_groq(prompt, max_tokens=80)
+            response = call_groq(prompt, max_tokens=100)
             if response:
+                # Clean up the response
+                response = response.strip()
+                # If response doesn't start with service name, add it
+                if not response.startswith(service_name):
+                    response = f"{service_name}: {response}"
                 logger.info(f"Generated description for {service_name}")
-                return response.strip()
+                return response
             else:
                 logger.warning(f"Empty response for {service_name}, using default")
                 return f"{service_name}: Provides core cloud functionality."
@@ -122,35 +150,48 @@ Start with the service name followed by a colon. Be concise and precise."""
         if not services:
             return ["No specific services detected. General AWS best practices apply."]
 
-        services_str = ", ".join(services)
-        prompt = f"""You are an AWS cloud architect. Given these AWS services: {services_str}
-Generate 5 concise best practice recommendations for cost optimization, security, and performance.
-Number them 1 to 5. Keep each recommendation to 1-2 sentences.
-Start directly with the numbered list."""
+        services_str = ", ".join(services[:10])  # Limit to first 10 services
+        prompt = f"""You are an AWS Solutions Architect. Based on these AWS services: {services_str}
+
+Provide 5 specific, actionable best practice recommendations focusing on:
+- Cost optimization
+- Security
+- Performance
+- Operational excellence
+
+Format: Number each recommendation 1-5. Keep each to 1-2 sentences. Be specific to the services mentioned.
+
+Start with "1." immediately:"""
 
         try:
-            response = call_groq(prompt, max_tokens=400)
+            response = call_groq(prompt, max_tokens=500)
             if response:
-                logger.info(f"Generated best practices for {len(services)} services")
-                lines = [line.strip() for line in response.split('\n') if line.strip() and re.match(r'^\d+\.', line.strip())]
+                logger.info(f"Best practices response: {response[:100]}")
+                # Extract numbered lines
+                lines = []
+                for line in response.split('\n'):
+                    line = line.strip()
+                    if line and re.match(r'^\d+\.', line):
+                        lines.append(line)
+                
                 if lines:
+                    logger.info(f"Found {len(lines)} best practice lines")
                     return lines[:5]
                 else:
-                    logger.warning("No numbered lines found in response, using defaults")
+                    logger.warning("No numbered lines found in response")
             else:
-                logger.warning("Empty response for best practices, using defaults")
-            return ["1. Implement IAM roles with least privilege principles.",
-                    "2. Enable CloudTrail for auditing.",
-                    "3. Use Cost Explorer for cost optimization.",
-                    "4. Configure CloudWatch for monitoring.",
-                    "5. Implement backup and disaster recovery strategies."]
+                logger.warning("Empty response for best practices")
         except Exception as e:
             logger.error(f"Error generating best practices: {e}")
-            return ["1. Implement IAM roles with least privilege principles.",
-                    "2. Enable CloudTrail for auditing.",
-                    "3. Use Cost Explorer for cost optimization.",
-                    "4. Configure CloudWatch for monitoring.",
-                    "5. Implement backup and disaster recovery strategies."]
+        
+        # Fallback defaults
+        return [
+            "1. Implement IAM roles with least privilege principles for enhanced security.",
+            "2. Enable CloudTrail and CloudWatch for comprehensive auditing and monitoring.",
+            "3. Use AWS Cost Explorer and set up billing alerts for cost optimization.",
+            "4. Implement auto-scaling and right-sizing for compute resources.",
+            "5. Enable encryption at rest and in transit for all sensitive data."
+        ]
 
     def extract_ec2_values(self, configuration_summary: str) -> tuple:
         try:
