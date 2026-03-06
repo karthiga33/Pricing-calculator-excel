@@ -325,14 +325,16 @@ Start with "1." immediately:"""
             rds_specs = {}
             if has_rds:
                 for i in range(len(data)):
-                    if "RDS" in str(data.iloc[i, service_idx]).upper():
+                    svc_name = str(data.iloc[i, service_idx]).upper()
+                    if "RDS" in svc_name or "MYSQL" in svc_name or "POSTGRESQL" in svc_name or "MARIADB" in svc_name or "ORACLE" in svc_name or "SQL SERVER" in svc_name:
                         config_val = str(data.iloc[i, config_idx])
-                        m = re.search(r"(?:rds\s*instance|instance\s*type|instance)\s*\((.*?)\)", config_val, re.I)
-                        if not m:
-                            m = re.search(r"(db\.[a-z0-9]+\.[a-z0-9]+)", config_val, re.I)
+                        # Look for instance type patterns
+                        m = re.search(r"(db\.[a-z0-9]+\.[a-z0-9]+)", config_val, re.I)
                         if m:
                             rds_instance_types.add(m.group(1).strip())
+                            logger.info(f"Found RDS instance type: {m.group(1).strip()}")
                 if rds_instance_types:
+                    logger.info(f"Extracting specs for RDS instances: {rds_instance_types}")
                     rds_specs = self.extract_rds_specs(list(rds_instance_types))
 
             specs_failed = False
@@ -427,7 +429,7 @@ Start with "1." immediately:"""
                     continue
 
                 is_ec2 = "EC2" in full_service.upper()
-                is_rds = "RDS" in full_service.upper()
+                is_rds = "RDS" in full_service.upper() or "MYSQL" in full_service.upper() or "POSTGRESQL" in full_service.upper() or "MARIADB" in full_service.upper() or "ORACLE" in full_service.upper() or "SQL SERVER" in full_service.upper()
 
                 if (has_ec2 or has_rds) and (is_ec2 or is_rds):
                     config_val = str(data.iloc[i, config_idx])
