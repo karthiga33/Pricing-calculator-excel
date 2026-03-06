@@ -290,13 +290,33 @@ Start with "1." immediately:"""
         except:
             return None, None, None
 
-    def extract_rds_values(self, configuration_summary: str) -> tuple:
+    def extract_rds_values(self, configuration_summary: str, service_name: str) -> tuple:
         try:
-            db_match = re.search(r"database\s*(?:name|engine)?\s*\((.*?)\)", configuration_summary, re.I)
-            type_match = re.search(r"(?:rds\s*instance|instance\s*type)\s*\((.*?)\)", configuration_summary, re.I)
-            price_match = re.search(r"pricing\s*strategy\s*\((.*?)\)", configuration_summary, re.I)
+            # Extract database type from service name (e.g., "Amazon RDS for MySQL" -> "MySQL")
+            db_type = None
+            db_engines = ["MySQL", "PostgreSQL", "MariaDB", "Oracle", "SQL Server", "Aurora"]
+            for engine in db_engines:
+                if engine.upper() in service_name.upper():
+                    db_type = engine
+                    break
+            
+            # Try multiple patterns to find instance type
+            type_match = re.search(r"(?:rds\s*instance|instance\s*type|instance)\s*\((.*?)\)", configuration_summary, re.I)
+            if not type_match:
+                # Try to find db.* pattern anywhere in the config
+                type_match = re.search(r"(db\.[a-z0-9]+\.[a-z0-9]+)", configuration_summary, re.I)
+            
+            price_match = re.search(r"(?:pricing\s*strategy|reserved|upfront)\s*\((.*?)\)", configuration_summary, re.I)
+            if not price_match:
+                # Try to extract pricing info from text
+                if "reserved" in configuration_summary.lower():
+                    if "no upfront" in configuration_summary.lower():
+                        price_match = type('obj', (object,), {'group': lambda x: "Reserved No Upfront"})()
+                    else:
+                        price_match = type('obj', (object,), {'group': lambda x: "Reserved"})()
+            
             return (
-                db_match.group(1).strip() if db_match else None,
+                db_type,
                 type_match.group(1).strip() if type_match else None,
                 price_match.group(1).strip() if price_match else None,
             )
@@ -348,12 +368,17 @@ Start with "1." immediately:"""
             rds_instance_types = set()
             rds_specs = {}
             if has_rds:
-                for val in data[config_col]:
-                    if "RDS" in str(val).upper():
-                        m = re.search(r"(?:rds\s*instance|instance\s*type)\s*\((.*?)\)", str(val), re.I)
+                for idx, row in data.iterrows():
+                    if "RDS" in str(row[service_col]).upper():
+                        config_val = str(row[config_col])
+                        # Try multiple patterns
+                        m = re.search(r"(?:rds\s*instance|instance\s*type|instance)\s*\((.*?)\)", config_val, re.I)
+                        if not m:
+                            m = re.search(r"(db\.[a-z0-9]+\.[a-z0-9]+)", config_val, re.I)
                         if m:
                             rds_instance_types.add(m.group(1).strip())
-                rds_specs = self.extract_rds_specs(list(rds_instance_types))
+                if rds_instance_types:
+                    rds_specs = self.extract_rds_specs(list(rds_instance_types))
 
             specs_failed = any(v["vCPUs"] is None and v["MemoryGiB"] is None for v in ec2_specs.values())
             rds_specs_failed = any(v["vCPUs"] is None and v["MemoryGiB"] is None for v in rds_specs.values())
@@ -449,7 +474,7 @@ Start with "1." immediately:"""
                         os_val, instance_type, price_model = self.extract_ec2_values(r[config_col])
                         spec = ec2_specs.get(instance_type or "", {"vCPUs": None, "MemoryGiB": None})
                     else:  # is_rds
-                        os_val, instance_type, price_model = self.extract_rds_values(r[config_col])
+                        os_val, instance_type, price_model = self.extract_rds_values(r[config_col], full_service)
                         spec = rds_specs.get(instance_type or "", {"vCPUs": None, "MemoryGiB": None})
 
                     values = [
