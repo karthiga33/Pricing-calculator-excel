@@ -157,6 +157,53 @@ JSON:"""
         
         return {it: {"vCPUs": None, "MemoryGiB": None} for it in instance_types}
 
+    def extract_rds_specs(self, instance_types: List[str]) -> Dict:
+        if not instance_types:
+            return {}
+
+        prompt = f"""You are an AWS RDS specifications expert. Provide EXACT official AWS RDS instance specifications.
+
+RDS instance types to lookup: {', '.join(instance_types)}
+
+RDS instances follow similar patterns to EC2:
+- db.t3.medium = 2 vCPUs, 4 GiB
+- db.t3.large = 2 vCPUs, 8 GiB
+- db.m5.large = 2 vCPUs, 8 GiB
+- db.m5.xlarge = 4 vCPUs, 16 GiB
+- db.r5.large = 2 vCPUs, 16 GiB
+- db.r5.xlarge = 4 vCPUs, 32 GiB
+
+Return ONLY valid JSON (no markdown, no text):
+{{
+  "db.t3.medium": {{"vCPUs": 2, "MemoryGiB": 4}},
+  "db.m5.large": {{"vCPUs": 2, "MemoryGiB": 8}}
+}}
+
+JSON:"""
+
+        try:
+            response = call_groq(prompt, max_tokens=600)
+            logger.info(f"RDS specs raw response: {response[:200]}")
+            
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group()
+                rds_specs = json.loads(json_str)
+                logger.info(f"Successfully parsed RDS specs: {rds_specs}")
+                
+                for it in instance_types:
+                    if it not in rds_specs:
+                        rds_specs[it] = {"vCPUs": None, "MemoryGiB": None}
+                return rds_specs
+            else:
+                logger.warning("No JSON found in RDS specs response")
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decode error for RDS specs: {e}")
+        except Exception as e:
+            logger.error(f"Error extracting RDS specs: {e}")
+        
+        return {it: {"vCPUs": None, "MemoryGiB": None} for it in instance_types}
+
     def generate_service_description(self, service_name: str) -> str:
         prompt = f"""You are an AWS cloud expert. Describe this AWS service in ONE clear sentence.
 
@@ -243,6 +290,19 @@ Start with "1." immediately:"""
         except:
             return None, None, None
 
+    def extract_rds_values(self, configuration_summary: str) -> tuple:
+        try:
+            db_match = re.search(r"database\s*(?:name|engine)?\s*\((.*?)\)", configuration_summary, re.I)
+            type_match = re.search(r"(?:rds\s*instance|instance\s*type)\s*\((.*?)\)", configuration_summary, re.I)
+            price_match = re.search(r"pricing\s*strategy\s*\((.*?)\)", configuration_summary, re.I)
+            return (
+                db_match.group(1).strip() if db_match else None,
+                type_match.group(1).strip() if type_match else None,
+                price_match.group(1).strip() if price_match else None,
+            )
+        except:
+            return None, None, None
+
     def generate_cost_report(self, input_file: str, output_file: str, customer_name: str,
                             usd_to_inr: float, region: str, pricing_link: str = ""):
         os.makedirs(os.path.dirname(output_file) or '.', exist_ok=True)
@@ -273,6 +333,7 @@ Start with "1." immediately:"""
             data = df[[service_col, monthly_col, config_col]].fillna("")
 
             has_ec2 = any("EC2" in str(row[service_col]).upper() for _, row in data.iterrows())
+            has_rds = any("RDS" in str(row[service_col]).upper() for _, row in data.iterrows())
 
             instance_types = set()
             ec2_specs = {}
@@ -284,7 +345,18 @@ Start with "1." immediately:"""
                             instance_types.add(m.group(1).strip())
                 ec2_specs = self.extract_ec2_specs(list(instance_types))
 
+            rds_instance_types = set()
+            rds_specs = {}
+            if has_rds:
+                for val in data[config_col]:
+                    if "RDS" in str(val).upper():
+                        m = re.search(r"(?:rds\s*instance|instance\s*type)\s*\((.*?)\)", str(val), re.I)
+                        if m:
+                            rds_instance_types.add(m.group(1).strip())
+                rds_specs = self.extract_rds_specs(list(rds_instance_types))
+
             specs_failed = any(v["vCPUs"] is None and v["MemoryGiB"] is None for v in ec2_specs.values())
+            rds_specs_failed = any(v["vCPUs"] is None and v["MemoryGiB"] is None for v in rds_specs.values())
 
             seen_services = set()
             cleaned_services = []
@@ -329,15 +401,15 @@ Start with "1." immediately:"""
             summary.column_dimensions["B"].width = 15
 
             sheet = wb.create_sheet("AWS Services")
-            sheet.merge_cells("A1:K1" if has_ec2 else "A1:E1")
+            sheet.merge_cells("A1:K1" if (has_ec2 or has_rds) else "A1:E1")
             sheet["A1"] = f"Cost Estimation Report For {customer_name}"
             sheet["A1"].font = Font(bold=True, color="000000")
             sheet["A1"].alignment = Alignment(horizontal="center")
             sheet["A1"].fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
-            if has_ec2:
+            if has_ec2 or has_rds:
                 headers = [
-                    "S.NO", "EC2 Type (Advanced EC2 Instance)", "vCPU", "RAM", "Operating System",
+                    "S.NO", "Instance Type", "vCPU", "RAM", "Operating System/Database",
                     "Running Hours", "Pricing Model", "Services", "Per Month USD", "Per Month INR", "Per Year INR"
                 ]
                 usd_col = 9
@@ -370,13 +442,18 @@ Start with "1." immediately:"""
                     continue
 
                 is_ec2 = "EC2" in full_service.upper()
+                is_rds = "RDS" in full_service.upper()
 
-                if has_ec2 and is_ec2:
-                    os_val, ec2_type, price_model = self.extract_ec2_values(r[config_col])
-                    spec = ec2_specs.get(ec2_type or "", {"vCPUs": None, "MemoryGiB": None})
+                if (has_ec2 or has_rds) and (is_ec2 or is_rds):
+                    if is_ec2:
+                        os_val, instance_type, price_model = self.extract_ec2_values(r[config_col])
+                        spec = ec2_specs.get(instance_type or "", {"vCPUs": None, "MemoryGiB": None})
+                    else:  # is_rds
+                        os_val, instance_type, price_model = self.extract_rds_values(r[config_col])
+                        spec = rds_specs.get(instance_type or "", {"vCPUs": None, "MemoryGiB": None})
 
                     values = [
-                        (1, counter), (2, ec2_type or ""), (3, spec.get('vCPUs')),
+                        (1, counter), (2, instance_type or ""), (3, spec.get('vCPUs')),
                         (4, spec.get('MemoryGiB')), (5, os_val or ""), (6, "730 hours"),
                         (7, price_model or ""), (8, full_service), (9, usd)
                     ]
@@ -426,12 +503,12 @@ Start with "1." immediately:"""
             last_data_row = row - 1
 
             total_r = row
-            merge_end_total = "H" if has_ec2 else openpyxl.utils.get_column_letter(usd_col - 1)
+            merge_end_total = "H" if (has_ec2 or has_rds) else openpyxl.utils.get_column_letter(usd_col - 1)
             sheet.merge_cells(f"A{total_r}:{merge_end_total}{total_r}")
             sheet.cell(total_r, 1, "Total Cost").alignment = Alignment(horizontal="right")
             sheet.cell(total_r, 1).border = full_border
 
-            for c in range(1, (12 if has_ec2 else usd_col + 3)):
+            for c in range(1, (12 if (has_ec2 or has_rds) else usd_col + 3)):
                 sheet.cell(total_r, c).border = full_border
                 sheet.cell(total_r, c).fill = total_fill
 
@@ -449,15 +526,15 @@ Start with "1." immediately:"""
             sheet.cell(total_r, yearly_col).number_format = '₹#,##0.00'
 
             pl_row = total_r + 1
-            merge_end_pl = "H" if has_ec2 else openpyxl.utils.get_column_letter(usd_col - 1)
+            merge_end_pl = "H" if (has_ec2 or has_rds) else openpyxl.utils.get_column_letter(usd_col - 1)
             sheet.merge_cells(f"A{pl_row}:{merge_end_pl}{pl_row}")
             sheet.cell(pl_row, 1, "Pricing Link").alignment = Alignment(horizontal="right")
 
-            for c in range(1, (12 if has_ec2 else usd_col + 3)):
+            for c in range(1, (12 if (has_ec2 or has_rds) else usd_col + 3)):
                 sheet.cell(pl_row, c).border = full_border
                 sheet.cell(pl_row, c).fill = pricing_link_fill
 
-            sheet.cell(pl_row, usd_col if not has_ec2 else 9, pricing_link or "Not provided")
+            sheet.cell(pl_row, usd_col if not (has_ec2 or has_rds) else 9, pricing_link or "Not provided")
 
             note_row = pl_row + 1
             note_title = sheet.cell(note_row, 1, "Note:")
@@ -477,6 +554,11 @@ Start with "1." immediately:"""
 
             if specs_failed and has_ec2:
                 sheet.cell(cur_note_row, 1, f"{note_sno}. Failed to extract EC2 specs (vCPU, RAM) from model.")
+                cur_note_row += 1
+                note_sno += 1
+
+            if rds_specs_failed and has_rds:
+                sheet.cell(cur_note_row, 1, f"{note_sno}. Failed to extract RDS specs (vCPU, RAM) from model.")
                 cur_note_row += 1
                 note_sno += 1
 
@@ -501,7 +583,7 @@ Start with "1." immediately:"""
             for i, line in enumerate(best_practices, 1):
                 sheet.cell(bp_row + i, 1, line)
 
-            if has_ec2:
+            if has_ec2 or has_rds:
                 widths = [6, 28, 10, 10, 18, 14, 16, 40, 14, 14, 14]
             else:
                 widths = [6, 50, 16, 16, 16]
