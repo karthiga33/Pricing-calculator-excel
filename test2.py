@@ -335,8 +335,13 @@ Start with "1." immediately:"""
                 if rds_instance_types:
                     rds_specs = self.extract_rds_specs(list(rds_instance_types))
 
-            specs_failed = any(v["vCPUs"] is None and v["MemoryGiB"] is None for v in ec2_specs.values())
-            rds_specs_failed = any(v["vCPUs"] is None and v["MemoryGiB"] is None for v in rds_specs.values())
+            specs_failed = False
+            if ec2_specs:
+                specs_failed = any(v.get("vCPUs") is None and v.get("MemoryGiB") is None for v in ec2_specs.values() if isinstance(v, dict))
+            
+            rds_specs_failed = False
+            if rds_specs:
+                rds_specs_failed = any(v.get("vCPUs") is None and v.get("MemoryGiB") is None for v in rds_specs.values() if isinstance(v, dict))
 
             seen_services = set()
             cleaned_services = []
@@ -432,6 +437,10 @@ Start with "1." immediately:"""
                     else:  # is_rds
                         os_val, instance_type, price_model = self.extract_rds_values(config_val, full_service)
                         spec = rds_specs.get(instance_type or "", {"vCPUs": None, "MemoryGiB": None})
+                    
+                    # Ensure spec is a dict
+                    if not isinstance(spec, dict):
+                        spec = {"vCPUs": None, "MemoryGiB": None}
 
                     values = [
                         (1, counter), (2, instance_type or ""), (3, spec.get('vCPUs')),
