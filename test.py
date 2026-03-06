@@ -75,6 +75,58 @@ class CostReportAgent:
             logger.error(f"Error extracting EC2 specs: {e}")
             return {it: {"vCPUs": None, "MemoryGiB": None} for it in instance_types}
 
+    def extract_rds_specs(self, instance_types: List[str]) -> Dict:
+        if not instance_types:
+            return {}
+
+        system_prompt = [{"text": """
+            You are a data extraction assistant specialized in AWS RDS instances. 
+            Given a list of RDS instance types, provide the vCPUs and Memory (GiB) for each instance type.
+            Return the result as a JSON object where keys are the instance types and values are dictionaries 
+            with 'vCPUs' and 'MemoryGiB' keys. Use null if a value is not found.
+            Ensure all specified instance types are included in the output, even if their values are not found.
+        """}]
+
+        user_message = [{"role": "user", "content": [{"text": f"RDS Instance Types: {', '.join(instance_types)}"}]}]
+
+        inference_params = {"maxTokens": 500, "topP": 0.9, "topK": 20, "temperature": 0.7}
+
+        request_body = {
+            "schemaVersion": "messages-v1",
+            "messages": user_message,
+            "system": system_prompt,
+            "inferenceConfig": inference_params,
+        }
+
+        try:
+            response = bedrock_client.invoke_model_with_response_stream(
+                modelId=LITE_MODEL_ID, body=json.dumps(request_body)
+            )
+            full_response = ""
+            for event in response.get("body", []):
+                chunk = event.get("chunk")
+                if chunk:
+                    chunk_json = json.loads(chunk.get("bytes").decode())
+                    if content_block_delta := chunk_json.get("contentBlockDelta"):
+                        if text := content_block_delta.get("delta", {}).get("text"):
+                            full_response += text
+
+            json_start = full_response.find("```json") + 7
+            json_end = full_response.rfind("```")
+            if json_start > 6 and json_end > json_start:
+                rds_specs = json.loads(full_response[json_start:json_end].strip())
+            else:
+                rds_specs = {}
+
+            for it in instance_types:
+                rds_specs.setdefault(it, {"vCPUs": None, "MemoryGiB": None})
+
+            return rds_specs
+
+        except Exception as e:
+            logger.error(f"Error extracting RDS specs: {e}")
+            return {it: {"vCPUs": None, "MemoryGiB": None} for it in instance_types}
+
     def generate_service_description(self, service_name: str) -> str:
         system_prompt = [{"text": """
             You are an AI assistant specialized in AWS services. 
@@ -173,6 +225,43 @@ class CostReportAgent:
         except:
             return None, None, None
 
+    def extract_rds_values(self, configuration_summary: str, service_name: str) -> tuple:
+        try:
+            # Extract database type from service name
+            db_type = None
+            db_engines = ["MySQL", "PostgreSQL", "MariaDB", "Oracle", "SQL Server", "Aurora"]
+            for engine in db_engines:
+                if engine.upper() in service_name.upper():
+                    db_type = engine
+                    break
+            
+            # Try multiple patterns to find instance type
+            instance_type = None
+            type_match = re.search(r"(?:rds\s*instance|instance\s*type|instance)\s*\((.*?)\)", configuration_summary, re.I)
+            if type_match:
+                instance_type = type_match.group(1).strip()
+            else:
+                type_match = re.search(r"(db\.[a-z0-9]+\.[a-z0-9]+)", configuration_summary, re.I)
+                if type_match:
+                    instance_type = type_match.group(1).strip()
+            
+            # Extract pricing info
+            pricing_model = None
+            price_match = re.search(r"(?:pricing\s*strategy|reserved|upfront)\s*\((.*?)\)", configuration_summary, re.I)
+            if price_match:
+                pricing_model = price_match.group(1).strip()
+            else:
+                if "reserved" in configuration_summary.lower():
+                    if "no upfront" in configuration_summary.lower():
+                        pricing_model = "Reserved No Upfront"
+                    else:
+                        pricing_model = "Reserved"
+            
+            return (db_type, instance_type, pricing_model)
+        except Exception as e:
+            logger.error(f"Error extracting RDS values: {e}")
+            return None, None, None
+
     def generate_cost_report(
         self,
         input_file: str,
@@ -210,6 +299,7 @@ class CostReportAgent:
             data = df[[service_col, monthly_col, config_col]].fillna("")
 
             has_ec2 = any("EC2" in str(row[service_col]).upper() for _, row in data.iterrows())
+            has_rds = any("RDS" in str(row[service_col]).upper() for _, row in data.iterrows())
 
             instance_types = set()
             ec2_specs = {}
@@ -221,7 +311,22 @@ class CostReportAgent:
                             instance_types.add(m.group(1).strip())
                 ec2_specs = self.extract_ec2_specs(list(instance_types))
 
+            rds_instance_types = set()
+            rds_specs = {}
+            if has_rds:
+                for idx, row in data.iterrows():
+                    if "RDS" in str(row[service_col]).upper():
+                        config_val = str(row[config_col])
+                        m = re.search(r"(?:rds\s*instance|instance\s*type|instance)\s*\((.*?)\)", config_val, re.I)
+                        if not m:
+                            m = re.search(r"(db\.[a-z0-9]+\.[a-z0-9]+)", config_val, re.I)
+                        if m:
+                            rds_instance_types.add(m.group(1).strip())
+                if rds_instance_types:
+                    rds_specs = self.extract_rds_specs(list(rds_instance_types))
+
             specs_failed = any(v["vCPUs"] is None and v["MemoryGiB"] is None for v in ec2_specs.values())
+            rds_specs_failed = any(v["vCPUs"] is None and v["MemoryGiB"] is None for v in rds_specs.values())
 
             # Collect unique cleaned service names for best practices & descriptions
             seen_services = set()
@@ -271,15 +376,15 @@ class CostReportAgent:
             # ────────────────────────────────
 
             sheet = wb.create_sheet("AWS Services")
-            sheet.merge_cells("A1:K1" if has_ec2 else "A1:E1")
+            sheet.merge_cells("A1:K1" if (has_ec2 or has_rds) else "A1:E1")
             sheet["A1"] = f"Cost Estimation Report For {customer_name}"
             sheet["A1"].font = Font(bold=True, color="000000")
             sheet["A1"].alignment = Alignment(horizontal="center")
             sheet["A1"].fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
 
-            if has_ec2:
+            if has_ec2 or has_rds:
                 headers = [
-                    "S.NO", "EC2 Type (Advanced EC2 Instance)", "vCPU", "RAM", "Operating System",
+                    "S.NO", "Instance Type", "vCPU", "RAM", "Operating System/Database",
                     "Running Hours", "Pricing Model", "Services", "Per Month USD", "Per Month INR", "Per Year INR"
                 ]
                 ec2_type_col = 2
@@ -317,21 +422,25 @@ class CostReportAgent:
                     continue
 
                 is_ec2 = "EC2" in full_service.upper()
+                is_rds = "RDS" in full_service.upper()
 
-                if has_ec2 and is_ec2:
-                    os_val, ec2_type, price_model = self.extract_ec2_values(r[config_col])
-                    spec = ec2_specs.get(ec2_type or "", {"vCPUs": None, "MemoryGiB": None})
+                if (has_ec2 or has_rds) and (is_ec2 or is_rds):
+                    if is_ec2:
+                        os_val, instance_type, price_model = self.extract_ec2_values(r[config_col])
+                        spec = ec2_specs.get(instance_type or "", {"vCPUs": None, "MemoryGiB": None})
+                    else:  # is_rds
+                        os_val, instance_type, price_model = self.extract_rds_values(r[config_col], full_service)
+                        spec = rds_specs.get(instance_type or "", {"vCPUs": None, "MemoryGiB": None})
 
-                    # EC2 Type column gets only the instance type
                     values = [
                         (1, counter),
-                        (2, ec2_type or ""),               # ← only type here
+                        (2, instance_type or ""),
                         (3, spec.get('vCPUs')),
                         (4, spec.get('MemoryGiB')),
                         (5, os_val or ""),
                         (6, "730 hours"),
                         (7, price_model or ""),
-                        (8, full_service),                 # ← full service name here
+                        (8, full_service),
                         (9, usd)
                     ]
 
@@ -383,12 +492,12 @@ class CostReportAgent:
 
             # ── Total row ──
             total_r = row
-            merge_end_total = "H" if has_ec2 else openpyxl.utils.get_column_letter(usd_col - 1)
+            merge_end_total = "H" if (has_ec2 or has_rds) else openpyxl.utils.get_column_letter(usd_col - 1)
             sheet.merge_cells(f"A{total_r}:{merge_end_total}{total_r}")
             sheet.cell(total_r, 1, "Total Cost").alignment = Alignment(horizontal="right")
             sheet.cell(total_r, 1).border = full_border
 
-            for c in range(1, (12 if has_ec2 else usd_col + 3)):
+            for c in range(1, (12 if (has_ec2 or has_rds) else usd_col + 3)):
                 sheet.cell(total_r, c).border = full_border
                 sheet.cell(total_r, c).fill = total_fill
 
@@ -407,15 +516,15 @@ class CostReportAgent:
 
             # ── Pricing link ──
             pl_row = total_r + 1
-            merge_end_pl = "H" if has_ec2 else openpyxl.utils.get_column_letter(usd_col - 1)
+            merge_end_pl = "H" if (has_ec2 or has_rds) else openpyxl.utils.get_column_letter(usd_col - 1)
             sheet.merge_cells(f"A{pl_row}:{merge_end_pl}{pl_row}")
             sheet.cell(pl_row, 1, "Pricing Link").alignment = Alignment(horizontal="right")
 
-            for c in range(1, (12 if has_ec2 else usd_col + 3)):
+            for c in range(1, (12 if (has_ec2 or has_rds) else usd_col + 3)):
                 sheet.cell(pl_row, c).border = full_border
                 sheet.cell(pl_row, c).fill = pricing_link_fill
 
-            sheet.cell(pl_row, usd_col if not has_ec2 else 9, pricing_link or "Not provided")
+            sheet.cell(pl_row, usd_col if not (has_ec2 or has_rds) else 9, pricing_link or "Not provided")
 
             # ── Notes section ── (NO borders)
             note_row = pl_row + 1
@@ -437,6 +546,11 @@ class CostReportAgent:
 
             if specs_failed and has_ec2:
                 sheet.cell(cur_note_row, 1, f"{note_sno}. Failed to extract EC2 specs (vCPU, RAM) from model.")
+                cur_note_row += 1
+                note_sno += 1
+
+            if rds_specs_failed and has_rds:
+                sheet.cell(cur_note_row, 1, f"{note_sno}. Failed to extract RDS specs (vCPU, RAM) from model.")
                 cur_note_row += 1
                 note_sno += 1
 
@@ -464,7 +578,7 @@ class CostReportAgent:
                 sheet.cell(bp_row + i, 1, line)
 
             # ── Column widths ──
-            if has_ec2:
+            if has_ec2 or has_rds:
                 widths = [6, 28, 10, 10, 18, 14, 16, 40, 14, 14, 14]
             else:
                 widths = [6, 50, 16, 16, 16]
