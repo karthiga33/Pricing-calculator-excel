@@ -302,9 +302,14 @@ Start with "1." immediately:"""
                 raise ValueError("Required columns not found")
 
             data = df[[service_col, monthly_col, config_col]].fillna("")
+            
+            # Get column positions for safe indexing
+            service_idx = 0  # First column in data
+            monthly_idx = 1  # Second column in data  
+            config_idx = 2   # Third column in data
 
-            has_ec2 = any("EC2" in str(data.iloc[i, 0]).upper() for i in range(len(data)))
-            has_rds = any("RDS" in str(data.iloc[i, 0]).upper() for i in range(len(data)))
+            has_ec2 = any("EC2" in str(data.iloc[i, service_idx]).upper() for i in range(len(data)))
+            has_rds = any("RDS" in str(data.iloc[i, service_idx]).upper() for i in range(len(data)))
 
             instance_types = set()
             ec2_specs = {}
@@ -320,8 +325,8 @@ Start with "1." immediately:"""
             rds_specs = {}
             if has_rds:
                 for i in range(len(data)):
-                    if "RDS" in str(data.iloc[i, 0]).upper():
-                        config_val = str(data.iloc[i, 2])
+                    if "RDS" in str(data.iloc[i, service_idx]).upper():
+                        config_val = str(data.iloc[i, config_idx])
                         m = re.search(r"(?:rds\s*instance|instance\s*type|instance)\s*\((.*?)\)", config_val, re.I)
                         if not m:
                             m = re.search(r"(db\.[a-z0-9]+\.[a-z0-9]+)", config_val, re.I)
@@ -336,7 +341,7 @@ Start with "1." immediately:"""
             seen_services = set()
             cleaned_services = []
             for i in range(len(data)):
-                svc = str(data.iloc[i, 0]).strip()
+                svc = str(data.iloc[i, service_idx]).strip()
                 if svc and svc not in seen_services:
                     seen_services.add(svc)
                     clean_name = svc.split('(')[0].strip()
@@ -408,11 +413,11 @@ Start with "1." immediately:"""
             rate_str = f"{usd_to_inr:.4f}"
 
             for i in range(len(data)):
-                full_service = str(data.iloc[i, 0]).strip()
+                full_service = str(data.iloc[i, service_idx]).strip()
                 if not full_service:
                     continue
                 try:
-                    usd = float(data.iloc[i, 1])
+                    usd = float(data.iloc[i, monthly_idx])
                 except:
                     continue
 
@@ -420,7 +425,7 @@ Start with "1." immediately:"""
                 is_rds = "RDS" in full_service.upper()
 
                 if (has_ec2 or has_rds) and (is_ec2 or is_rds):
-                    config_val = str(data.iloc[i, 2])
+                    config_val = str(data.iloc[i, config_idx])
                     if is_ec2:
                         os_val, instance_type, price_model = self.extract_ec2_values(config_val)
                         spec = ec2_specs.get(instance_type or "", {"vCPUs": None, "MemoryGiB": None})
@@ -540,7 +545,7 @@ Start with "1." immediately:"""
 
             seen = set()
             for i in range(len(data)):
-                svc = str(data.iloc[i, 0]).strip()
+                svc = str(data.iloc[i, service_idx]).strip()
                 if svc and svc not in seen:
                     seen.add(svc)
                     clean = svc.split('(')[0].strip()
