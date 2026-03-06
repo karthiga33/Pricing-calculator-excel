@@ -87,42 +87,6 @@ class CostReportAgent:
 
 Instance types to lookup: {', '.join(instance_types)}
 
-CRITICAL RULES - Follow AWS official patterns:
-
-1. SIZE PATTERNS (EXACT):
-   - nano: 2 vCPUs, 0.5 GiB
-   - micro: 1-2 vCPUs, 1 GiB
-   - small: 1-2 vCPUs, 2 GiB
-   - medium: 2 vCPUs, 4 GiB
-   - large: 2 vCPUs, 8 GiB
-   - xlarge: 4 vCPUs, 16 GiB
-   - 2xlarge: 8 vCPUs, 32 GiB
-   - 4xlarge: 16 vCPUs, 64 GiB
-
-2. FAMILY PATTERNS:
-   T-series (Burstable): t2, t3, t3a, t4g
-   - t3.medium = 2 vCPUs, 4 GiB
-   - t3a.medium = 2 vCPUs, 4 GiB (AMD variant)
-   - t3.large = 2 vCPUs, 8 GiB
-   
-   M-series (General Purpose): m5, m6a, m6i, m6g
-   - m6a.large = 2 vCPUs, 8 GiB
-   - m6a.xlarge = 4 vCPUs, 16 GiB
-   - m5.2xlarge = 8 vCPUs, 32 GiB
-   
-   C-series (Compute): c5, c6a, c6i
-   - c5.large = 2 vCPUs, 4 GiB (HALF memory of M-series)
-   - c5.xlarge = 4 vCPUs, 8 GiB
-   
-   R-series (Memory): r5, r6a, r6i
-   - r5.large = 2 vCPUs, 16 GiB (DOUBLE memory of M-series)
-   - r5.xlarge = 4 vCPUs, 32 GiB
-
-3. MEMORY FORMULA:
-   - T/M-series: large=8GB, xlarge=16GB, 2xlarge=32GB
-   - C-series: large=4GB, xlarge=8GB, 2xlarge=16GB (half of M)
-   - R-series: large=16GB, xlarge=32GB, 2xlarge=64GB (double of M)
-
 Return ONLY valid JSON (no markdown, no text):
 {{
   "t3a.medium": {{"vCPUs": 2, "MemoryGiB": 4}},
@@ -136,14 +100,12 @@ JSON:"""
             response = call_groq(prompt, max_tokens=600)
             logger.info(f"EC2 specs raw response: {response[:200]}")
             
-            # Try to extract JSON from response
             json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response, re.DOTALL)
             if json_match:
                 json_str = json_match.group()
                 ec2_specs = json.loads(json_str)
                 logger.info(f"Successfully parsed EC2 specs: {ec2_specs}")
                 
-                # Ensure all instance types are in the result
                 for it in instance_types:
                     if it not in ec2_specs:
                         ec2_specs[it] = {"vCPUs": None, "MemoryGiB": None}
@@ -164,14 +126,6 @@ JSON:"""
         prompt = f"""You are an AWS RDS specifications expert. Provide EXACT official AWS RDS instance specifications.
 
 RDS instance types to lookup: {', '.join(instance_types)}
-
-RDS instances follow similar patterns to EC2:
-- db.t3.medium = 2 vCPUs, 4 GiB
-- db.t3.large = 2 vCPUs, 8 GiB
-- db.m5.large = 2 vCPUs, 8 GiB
-- db.m5.xlarge = 4 vCPUs, 16 GiB
-- db.r5.large = 2 vCPUs, 16 GiB
-- db.r5.xlarge = 4 vCPUs, 32 GiB
 
 Return ONLY valid JSON (no markdown, no text):
 {{
@@ -216,9 +170,7 @@ Be specific about what the service does and its primary use case."""
         try:
             response = call_groq(prompt, max_tokens=100)
             if response:
-                # Clean up the response
                 response = response.strip()
-                # If response doesn't start with service name, add it
                 if not response.startswith(service_name):
                     response = f"{service_name}: {response}"
                 logger.info(f"Generated description for {service_name}")
@@ -234,7 +186,7 @@ Be specific about what the service does and its primary use case."""
         if not services:
             return ["No specific services detected. General AWS best practices apply."]
 
-        services_str = ", ".join(services[:10])  # Limit to first 10 services
+        services_str = ", ".join(services[:10])
         prompt = f"""You are an AWS Solutions Architect. Based on these AWS services: {services_str}
 
 Provide 5 specific, actionable best practice recommendations focusing on:
@@ -251,7 +203,6 @@ Start with "1." immediately:"""
             response = call_groq(prompt, max_tokens=500)
             if response:
                 logger.info(f"Best practices response: {response[:100]}")
-                # Extract numbered lines
                 lines = []
                 for line in response.split('\n'):
                     line = line.strip()
@@ -268,7 +219,6 @@ Start with "1." immediately:"""
         except Exception as e:
             logger.error(f"Error generating best practices: {e}")
         
-        # Fallback defaults
         return [
             "1. Implement IAM roles with least privilege principles for enhanced security.",
             "2. Enable CloudTrail and CloudWatch for comprehensive auditing and monitoring.",
@@ -292,7 +242,6 @@ Start with "1." immediately:"""
 
     def extract_rds_values(self, configuration_summary: str, service_name: str) -> tuple:
         try:
-            # Extract database type from service name (e.g., "Amazon RDS for MySQL" -> "MySQL")
             db_type = None
             db_engines = ["MySQL", "PostgreSQL", "MariaDB", "Oracle", "SQL Server", "Aurora"]
             for engine in db_engines:
@@ -300,27 +249,29 @@ Start with "1." immediately:"""
                     db_type = engine
                     break
             
-            # Try multiple patterns to find instance type
+            instance_type = None
             type_match = re.search(r"(?:rds\s*instance|instance\s*type|instance)\s*\((.*?)\)", configuration_summary, re.I)
-            if not type_match:
-                # Try to find db.* pattern anywhere in the config
+            if type_match:
+                instance_type = type_match.group(1).strip()
+            else:
                 type_match = re.search(r"(db\.[a-z0-9]+\.[a-z0-9]+)", configuration_summary, re.I)
+                if type_match:
+                    instance_type = type_match.group(1).strip()
             
+            pricing_model = None
             price_match = re.search(r"(?:pricing\s*strategy|reserved|upfront)\s*\((.*?)\)", configuration_summary, re.I)
-            if not price_match:
-                # Try to extract pricing info from text
+            if price_match:
+                pricing_model = price_match.group(1).strip()
+            else:
                 if "reserved" in configuration_summary.lower():
                     if "no upfront" in configuration_summary.lower():
-                        price_match = type('obj', (object,), {'group': lambda x: "Reserved No Upfront"})()
+                        pricing_model = "Reserved No Upfront"
                     else:
-                        price_match = type('obj', (object,), {'group': lambda x: "Reserved"})()
+                        pricing_model = "Reserved"
             
-            return (
-                db_type,
-                type_match.group(1).strip() if type_match else None,
-                price_match.group(1).strip() if price_match else None,
-            )
-        except:
+            return (db_type, instance_type, pricing_model)
+        except Exception as e:
+            logger.error(f"Error extracting RDS values: {e}")
             return None, None, None
 
     def generate_cost_report(self, input_file: str, output_file: str, customer_name: str,
@@ -352,8 +303,8 @@ Start with "1." immediately:"""
 
             data = df[[service_col, monthly_col, config_col]].fillna("")
 
-            has_ec2 = any("EC2" in str(row[service_col]).upper() for _, row in data.iterrows())
-            has_rds = any("RDS" in str(row[service_col]).upper() for _, row in data.iterrows())
+            has_ec2 = any("EC2" in str(data.iloc[i, 0]).upper() for i in range(len(data)))
+            has_rds = any("RDS" in str(data.iloc[i, 0]).upper() for i in range(len(data)))
 
             instance_types = set()
             ec2_specs = {}
@@ -368,10 +319,9 @@ Start with "1." immediately:"""
             rds_instance_types = set()
             rds_specs = {}
             if has_rds:
-                for idx, row in data.iterrows():
-                    if "RDS" in str(row[service_col]).upper():
-                        config_val = str(row[config_col])
-                        # Try multiple patterns
+                for i in range(len(data)):
+                    if "RDS" in str(data.iloc[i, 0]).upper():
+                        config_val = str(data.iloc[i, 2])
                         m = re.search(r"(?:rds\s*instance|instance\s*type|instance)\s*\((.*?)\)", config_val, re.I)
                         if not m:
                             m = re.search(r"(db\.[a-z0-9]+\.[a-z0-9]+)", config_val, re.I)
@@ -385,8 +335,8 @@ Start with "1." immediately:"""
 
             seen_services = set()
             cleaned_services = []
-            for _, r in data.iterrows():
-                svc = str(r[service_col]).strip()
+            for i in range(len(data)):
+                svc = str(data.iloc[i, 0]).strip()
                 if svc and svc not in seen_services:
                     seen_services.add(svc)
                     clean_name = svc.split('(')[0].strip()
@@ -457,12 +407,12 @@ Start with "1." immediately:"""
             counter = 1
             rate_str = f"{usd_to_inr:.4f}"
 
-            for _, r in data.iterrows():
-                full_service = str(r[service_col]).strip()
+            for i in range(len(data)):
+                full_service = str(data.iloc[i, 0]).strip()
                 if not full_service:
                     continue
                 try:
-                    usd = float(r[monthly_col])
+                    usd = float(data.iloc[i, 1])
                 except:
                     continue
 
@@ -470,11 +420,12 @@ Start with "1." immediately:"""
                 is_rds = "RDS" in full_service.upper()
 
                 if (has_ec2 or has_rds) and (is_ec2 or is_rds):
+                    config_val = str(data.iloc[i, 2])
                     if is_ec2:
-                        os_val, instance_type, price_model = self.extract_ec2_values(r[config_col])
+                        os_val, instance_type, price_model = self.extract_ec2_values(config_val)
                         spec = ec2_specs.get(instance_type or "", {"vCPUs": None, "MemoryGiB": None})
                     else:  # is_rds
-                        os_val, instance_type, price_model = self.extract_rds_values(r[config_col], full_service)
+                        os_val, instance_type, price_model = self.extract_rds_values(config_val, full_service)
                         spec = rds_specs.get(instance_type or "", {"vCPUs": None, "MemoryGiB": None})
 
                     values = [
@@ -588,8 +539,8 @@ Start with "1." immediately:"""
                 note_sno += 1
 
             seen = set()
-            for _, r in data.iterrows():
-                svc = str(r[service_col]).strip()
+            for i in range(len(data)):
+                svc = str(data.iloc[i, 0]).strip()
                 if svc and svc not in seen:
                     seen.add(svc)
                     clean = svc.split('(')[0].strip()
